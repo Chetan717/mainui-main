@@ -127,13 +127,21 @@ async function warmBirefNetInBackground() {
 /** Start loading the minimum reliable engine as early as possible. */
 export async function preloadBgModel(onProgress) {
   if (typeof window === "undefined") return "unavailable";
-  if (onProgress) activeProgress = onProgress;
+
+  // IMPORTANT: never assign activeProgress to a wrapper that calls
+  // emitProgress(). Doing that creates emitProgress -> activeProgress ->
+  // emitProgress recursion and eventually "Maximum call stack size exceeded".
+  const report =
+    typeof onProgress === "function"
+      ? (stage, percentage) =>
+          onProgress(stage, Math.max(0, Math.min(100, Math.round(percentage))))
+      : (stage, percentage) => emitProgress(stage, percentage);
 
   // Fast, bundled path is prepared first so first-use remove-bg stays quick.
   if (!preloadPromise) {
     preloadPromise = (async () => {
       const { preloadModNet } = await loadModNetEngine();
-      await preloadModNet((stage, percentage) => emitProgress(stage, percentage));
+      await preloadModNet(report);
       return "modnet-ready";
     })().catch((error) => {
       preloadPromise = null;
@@ -432,7 +440,7 @@ export async function removeBg(file, onProgress, signal) {
     let engine = "modnet";
     try {
       // Ensure at least the fast local engine is fully ready before we start.
-      await preloadBgModel((stage, percentage) => emitProgress(stage, percentage));
+      await preloadBgModel();
       const { blob, engine: usedEngine } = await removeWithSmartEngine(file, signal);
       engine = usedEngine;
       emitProgress(

@@ -75,6 +75,17 @@ export function toR2ProfileUrl(url) {
   return `${R2_PROFILE_BASE_URL}/${encoded}`;
 }
 
+export function getProfileReadCandidates(url) {
+  if (!url || typeof url !== "string") return [];
+  const original = url.trim();
+  if (!original) return [];
+
+  const candidates = [original];
+  const r2Url = toR2ProfileUrl(original);
+  if (r2Url && r2Url !== original) candidates.push(r2Url);
+  return [...new Set(candidates)];
+}
+
 // During the dual-storage rollout we must preserve legacy Firebase download
 // URLs exactly as Firestore stored them. Converting them to R2 eagerly can
 // break editor/canvas rendering when a recently-created Firebase object has

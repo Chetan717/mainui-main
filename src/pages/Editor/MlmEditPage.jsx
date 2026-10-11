@@ -17,6 +17,8 @@ import KonvaCanvas from "./KonvaCanvas";
 import FlipToolbar from "./FlipToolbar";
 import ListOfTemplates from "./components/ListOfTemplates";
 import { getAchieverDisplayName } from "./utils/canvasDataUtils";
+import useResilientCanvasImage from "../../hooks/useResilientCanvasImage";
+import { getProfileReadCandidates } from "../../utils/profileR2Urls";
 
 // ── Font-size helper ──────────────────────────────────────────────
 function calcFontSize(text, large, medium, small) {
@@ -157,17 +159,18 @@ function MlmEditPage({
   const [Imagel3] = useImage(logoURLs?.[1] || "", "anonymous");
   const [Imagel4] = useImage(logoURLs?.[2] || "", "anonymous");
   const [ImagetopFrame] = useImage(selectedTopFrame?.value || "", "anonymous");
-  const [Imagetop1] = useImage(topuplineURLs?.[0] || "", "anonymous");
-  const [Imagetop2] = useImage(topuplineURLs?.[1] || "", "anonymous");
-  const [Imagetop3] = useImage(topuplineURLs?.[2] || "", "anonymous");
-  const [Imagetop4] = useImage(topuplineURLs?.[3] || "", "anonymous");
+  const [Imagetop1] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[0] || ""));
+  const [Imagetop2] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[1] || ""));
+  const [Imagetop3] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[2] || ""));
+  const [Imagetop4] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[3] || ""));
   const [ImageForm] = useImage(
     `${mlmForm?.achiever?.image}` || "",
     "anonymous",
   );
-  const [ImageProfile] = useImage(
-    mlmForm?.promoter?.name ? `${mlmForm.promoter.image}` : `${middaleImage}`,
-    "anonymous",
+  const [ImageProfile] = useResilientCanvasImage(
+    getProfileReadCandidates(
+      mlmForm?.promoter?.name ? `${mlmForm.promoter.image}` : `${middaleImage || ""}`,
+    ),
   );
 
   const [captionModalOpen, setCaptionModalOpen] = useState(false);

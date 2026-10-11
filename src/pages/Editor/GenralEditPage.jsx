@@ -70,6 +70,10 @@ import {
 } from "../../services/downloadLimitService";
 import { getAchieverDisplayName } from "./utils/canvasDataUtils";
 import { getImageExportPixelRatio } from "./exportUtils";
+import useResilientCanvasImage, {
+  normalizeImageSources,
+} from "../../hooks/useResilientCanvasImage";
+import { getProfileReadCandidates } from "../../utils/profileR2Urls";
 
 const fs = (n) => n;
 
@@ -129,110 +133,6 @@ const readPreviewSeedGraphic = () => {
     },
   };
 };
-
-const normalizeImageSources = (sources) => {
-  const uniqueSources = [];
-  const seen = new Set();
-
-  for (const value of sources) {
-    if (typeof value !== "string") continue;
-    const source = value.trim();
-    if (
-      !source ||
-      /^(null|undefined|\[object Object\])$/i.test(source) ||
-      seen.has(source)
-    ) {
-      continue;
-    }
-    seen.add(source);
-    uniqueSources.push(source);
-  }
-
-  return uniqueSources;
-};
-
-function useResilientCanvasImage(sources, maxRetriesPerSource = 1) {
-  const sourceKey = useMemo(() => sources.join("\u0001"), [sources]);
-  const [loadedImage, setLoadedImage] = useState(null);
-  const [status, setStatus] = useState(sources.length > 0 ? "loading" : "idle");
-
-  useEffect(() => {
-    let cancelled = false;
-    let retryTimer = null;
-    let activeImage = null;
-    let sourceIndex = 0;
-    let retryCount = 0;
-
-    if (sources.length === 0 || typeof window === "undefined") {
-      setLoadedImage(null);
-      setStatus("idle");
-      return undefined;
-    }
-
-    setLoadedImage(null);
-    setStatus("loading");
-
-    const loadCurrentSource = () => {
-      if (cancelled) return;
-
-      const source = sources[sourceIndex];
-      const image = new window.Image();
-      activeImage = image;
-
-      // Remote images must be CORS-safe so Konva export never taints the canvas.
-      if (/^https?:\/\//i.test(source)) {
-        image.crossOrigin = "anonymous";
-      }
-      image.decoding = "async";
-
-      image.onload = () => {
-        if (cancelled || activeImage !== image) return;
-        setLoadedImage(image);
-        setStatus("loaded");
-      };
-
-      image.onerror = () => {
-        if (cancelled || activeImage !== image) return;
-
-        image.onload = null;
-        image.onerror = null;
-
-        if (retryCount < maxRetriesPerSource) {
-          retryCount += 1;
-          setStatus("retrying");
-          retryTimer = window.setTimeout(loadCurrentSource, 250 * retryCount);
-          return;
-        }
-
-        sourceIndex += 1;
-        retryCount = 0;
-
-        if (sourceIndex < sources.length) {
-          setStatus("loading");
-          retryTimer = window.setTimeout(loadCurrentSource, 0);
-        } else {
-          setLoadedImage(null);
-          setStatus("failed");
-        }
-      };
-
-      image.src = source;
-    };
-
-    loadCurrentSource();
-
-    return () => {
-      cancelled = true;
-      if (retryTimer !== null) window.clearTimeout(retryTimer);
-      if (activeImage) {
-        activeImage.onload = null;
-        activeImage.onerror = null;
-      }
-    };
-  }, [maxRetriesPerSource, sourceKey]);
-
-  return [loadedImage, status];
-}
 
 const isIOS = () =>
   /iPad|iPhone|iPod/.test(navigator.userAgent) ||
@@ -1900,34 +1800,36 @@ function GeneralEditPage({
     "anonymous",
   );
   const [ImagetopFrame] = useImage(selectedTopFrame?.value || "", "anonymous");
-  const [Imagetop1] = useImage(topuplineURLs?.[0] || "", "anonymous");
-  const [Imagetop2] = useImage(topuplineURLs?.[1] || "", "anonymous");
-  const [Imagetop3] = useImage(topuplineURLs?.[2] || "", "anonymous");
-  const [Imagetop4] = useImage(topuplineURLs?.[3] || "", "anonymous");
-  const [Imagetop5] = useImage(topuplineURLs?.[4] || "", "anonymous");
-  const [Imagetop6] = useImage(topuplineURLs?.[5] || "", "anonymous");
-  const [Imagetop7] = useImage(topuplineURLs?.[6] || "", "anonymous");
-  const [Imagetop8] = useImage(topuplineURLs?.[7] || "", "anonymous");
-  const [Imagetop9] = useImage(topuplineURLs?.[8] || "", "anonymous");
-  const [Imagetop10] = useImage(topuplineURLs?.[9] || "", "anonymous");
-  const [Imagetop11] = useImage(topuplineURLs?.[10] || "", "anonymous");
-  const [Imagetop12] = useImage(topuplineURLs?.[11] || "", "anonymous");
-  const [Imagetop13] = useImage(topuplineURLs?.[12] || "", "anonymous");
-  const [Imagetop14] = useImage(topuplineURLs?.[13] || "", "anonymous");
-  const [Imagetop15] = useImage(topuplineURLs?.[14] || "", "anonymous");
+  const [Imagetop1] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[0] || ""));
+  const [Imagetop2] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[1] || ""));
+  const [Imagetop3] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[2] || ""));
+  const [Imagetop4] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[3] || ""));
+  const [Imagetop5] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[4] || ""));
+  const [Imagetop6] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[5] || ""));
+  const [Imagetop7] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[6] || ""));
+  const [Imagetop8] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[7] || ""));
+  const [Imagetop9] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[8] || ""));
+  const [Imagetop10] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[9] || ""));
+  const [Imagetop11] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[10] || ""));
+  const [Imagetop12] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[11] || ""));
+  const [Imagetop13] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[12] || ""));
+  const [Imagetop14] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[13] || ""));
+  const [Imagetop15] = useResilientCanvasImage(getProfileReadCandidates(topuplineURLs?.[14] || ""));
 
   const [ImageChief] = useImage(meetingData?.chiefImage || "", "anonymous");
   const profileImageSources = useMemo(
     () =>
-      normalizeImageSources([
-        // Meeting host data always belongs to the logged-in MLM profile.
-        // For other form types, prefer the selected promoter photo when valid.
-        !isMeeting && mlmForm?.promoter?.name ? mlmForm?.promoter?.image : null,
-        middaleImage,
-        ...(Array.isArray(mlmProfile?.profileImageURLs)
-          ? mlmProfile.profileImageURLs
-          : []),
-      ]),
+      normalizeImageSources(
+        [
+          // Meeting host data always belongs to the logged-in MLM profile.
+          // For other form types, prefer the selected promoter photo when valid.
+          !isMeeting && mlmForm?.promoter?.name ? mlmForm?.promoter?.image : null,
+          middaleImage,
+          ...(Array.isArray(mlmProfile?.profileImageURLs)
+            ? mlmProfile.profileImageURLs
+            : []),
+        ].flatMap((source) => getProfileReadCandidates(source)),
+      ),
     [
       isMeeting,
       middaleImage,
