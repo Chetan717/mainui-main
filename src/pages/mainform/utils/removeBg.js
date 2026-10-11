@@ -1,29 +1,31 @@
 /**
  * Client-only background removal shared by every MLM LIVE photo flow.
  *
- * Quality tier:
- *   - WebGPU-capable devices: BiRefNet Lite 512 FP16 from Cloudflare R2.
- *   - Devices that are genuinely not capable of running the WebGPU model:
- *     bundled MODNet continuous-alpha portrait fallback.
- *
- * There is intentionally NO short timeout that downgrades a capable device to
- * MODNet while BiRefNet is still downloading. The quality model is preloaded
- * when the editor/photo UI mounts and is cached persistently after first use.
+ * Smart routing strategy:
+ *   - Always warm the fast/local MODNet path first so the very first removal
+ *     starts quickly and does not leave the user waiting on a giant download.
+ *   - Warm BiRefNet Lite 512 FP16 quietly in the background on capable devices.
+ *   - Use BiRefNet only when it is actually ready.
+ *   - If BiRefNet fails or returns a near-blank transparent image, fall back
+ *     automatically to MODNet in the same user action.
  */
 
 export const REMOVE_BG_QUALITY = Object.freeze({
-  engine: "birefnet-webgpu-with-modnet-capability-fallback",
-  model: "birefnet-lite-512-fp16",
+  engine: "smart-auto-modnet-first-birefnet-when-ready",
+  primaryFastPath: "modnet",
+  qualityUpgradePath: "birefnet-lite-512-fp16",
   continuousAlpha: true,
   lowQualityFallback: false,
   originalPhotoFallback: false,
-  fallbackOnlyWhenUnsupported: true,
+  fallbackOnlyWhenUnsupported: false,
 });
 
 let birefNetPromise = null;
 let modNetPromise = null;
 let preloadPromise = null;
 let selectedEnginePromise = null;
+let silentQualityWarmupPromise = null;
+let birefNetReady = false;
 let activeProgress = null;
 let processingTail = Promise.resolve();
 
@@ -91,36 +93,58 @@ function reportNativeFailure(error, engine) {
   }
 }
 
-/** Start loading the final engine as early as possible. */
+async function warmBirefNetInBackground() {
+  if (typeof window === "undefined") return "unavailable";
+  if (silentQualityWarmupPromise) return silentQualityWarmupPromise;
+
+  silentQualityWarmupPromise = (async () => {
+    try {
+      const selected = await selectBestEngine();
+      if (selected !== "birefnet") return "modnet";
+      const { preloadBirefNet } = await loadBirefNetEngine();
+      await preloadBirefNet();
+      birefNetReady = true;
+      return "birefnet";
+    } catch (error) {
+      birefNetReady = false;
+      if (error?.removeBgUnsupported === true) {
+        selectedEnginePromise = Promise.resolve("modnet");
+      }
+      // Keep the app usable. Fast local processing remains available.
+      console.warn("[removeBg] Background BiRefNet warmup skipped:", error);
+      return "modnet";
+    }
+  })().catch((error) => {
+    silentQualityWarmupPromise = null;
+    birefNetReady = false;
+    console.warn("[removeBg] Silent BiRefNet warmup failed:", error);
+    return "modnet";
+  });
+
+  return silentQualityWarmupPromise;
+}
+
+/** Start loading the minimum reliable engine as early as possible. */
 export async function preloadBgModel(onProgress) {
   if (typeof window === "undefined") return "unavailable";
   if (onProgress) activeProgress = onProgress;
 
+  // Fast, bundled path is prepared first so first-use remove-bg stays quick.
   if (!preloadPromise) {
     preloadPromise = (async () => {
-      const engine = await selectBestEngine();
-      if (engine === "birefnet") {
-        const { preloadBirefNet } = await loadBirefNetEngine();
-        try {
-          await preloadBirefNet((stage, percentage) => emitProgress(stage, percentage));
-          return "birefnet-webgpu";
-        } catch (error) {
-          // Only a genuine runtime/device incompatibility is allowed to route
-          // to MODNet. Slow download/network errors stay on BiRefNet and are
-          // surfaced/retried later instead of silently lowering quality.
-          if (error?.removeBgUnsupported !== true) throw error;
-          selectedEnginePromise = Promise.resolve("modnet");
-        }
-      }
-
       const { preloadModNet } = await loadModNetEngine();
       await preloadModNet((stage, percentage) => emitProgress(stage, percentage));
-      return "modnet-capability-fallback";
+      return "modnet-ready";
     })().catch((error) => {
       preloadPromise = null;
       throw error;
     });
   }
+
+  // Quality path warms silently in parallel for later requests on capable
+  // devices. It must never block the user's first successful removal.
+  void warmBirefNetInBackground();
+
   return preloadPromise;
 }
 
@@ -182,6 +206,128 @@ async function runModNet(file, signal) {
   return result;
 }
 
+function tagValidationError(message, engine) {
+  const error = new Error(message);
+  error.removeBgEngine = engine;
+  error.removeBgInvalidMask = true;
+  error.removeBgRetryable = false;
+  return error;
+}
+
+async function decodeResultBlob(blob) {
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(blob);
+      return {
+        width: bitmap.width,
+        height: bitmap.height,
+        drawTo: (ctx) => ctx.drawImage(bitmap, 0, 0),
+        close: () => bitmap.close?.(),
+      };
+    } catch {
+      // Fall back to HTMLImageElement below.
+    }
+  }
+
+  const url = URL.createObjectURL(blob);
+  try {
+    const image = new Image();
+    image.decoding = "async";
+    image.src = url;
+    if (typeof image.decode === "function") await image.decode();
+    else {
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = () => reject(new Error("Processed image could not be decoded."));
+      });
+    }
+    return {
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+      drawTo: (ctx) => ctx.drawImage(image, 0, 0),
+      close: () => URL.revokeObjectURL(url),
+    };
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    throw error;
+  }
+}
+
+async function validateTransparentResult(blob, engine, signal) {
+  throwIfAborted(signal);
+  const decoded = await decodeResultBlob(blob);
+  try {
+    const width = decoded.width;
+    const height = decoded.height;
+    if (!(width > 0) || !(height > 0)) {
+      throw tagValidationError("Processed image size is invalid.", engine);
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return blob;
+    decoded.drawTo(ctx);
+    const rgba = ctx.getImageData(0, 0, width, height).data;
+
+    const total = width * height;
+    let nonZero = 0;
+    let strong = 0;
+    let alphaSum = 0;
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
+
+    for (let i = 0, pixel = 0; i < rgba.length; i += 4, pixel += 1) {
+      const alpha = rgba[i + 3];
+      alphaSum += alpha;
+      if (alpha > 0) {
+        nonZero += 1;
+        const x = pixel % width;
+        const y = Math.floor(pixel / width);
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      if (alpha >= 64) strong += 1;
+    }
+
+    const nonZeroRatio = total > 0 ? nonZero / total : 0;
+    const strongRatio = total > 0 ? strong / total : 0;
+    const meanAlpha = total > 0 ? alphaSum / (255 * total) : 0;
+    const bboxArea =
+      maxX >= minX && maxY >= minY
+        ? (maxX - minX + 1) * (maxY - minY + 1)
+        : 0;
+    const bboxRatio = total > 0 ? bboxArea / total : 0;
+
+    // Protect against the exact failure seen in production: a nearly invisible
+    // silhouette on a fully transparent canvas.
+    if (nonZeroRatio < 0.003 || strongRatio < 0.0015 || meanAlpha < 0.015) {
+      throw tagValidationError(
+        `${engine} produced a near-blank transparent result.`,
+        engine,
+      );
+    }
+
+    // If almost the whole frame is transparent-but-weak and the visible box is
+    // tiny, the user effectively receives a blank image.
+    if (bboxRatio < 0.02 && meanAlpha < 0.05) {
+      throw tagValidationError(
+        `${engine} produced too little visible foreground.`,
+        engine,
+      );
+    }
+
+    return blob;
+  } finally {
+    decoded.close?.();
+  }
+}
+
 export function isRetryableRemoveBgError(error) {
   let current = error;
   const visited = new Set();
@@ -197,40 +343,76 @@ async function retrySameEngine(engine) {
   preloadPromise = null;
   if (engine === "birefnet") {
     const { resetBirefNetEngine } = await loadBirefNetEngine();
-    // Keep the cached 94 MB file. A transient session failure should not force
+    // Keep the cached large file. A transient session failure should not force
     // a second giant network download.
     await resetBirefNetEngine({ freshAssets: false });
+    birefNetReady = false;
+    await warmBirefNetInBackground();
     return;
   }
   const { resetModNetEngine } = await loadModNetEngine();
   resetModNetEngine({ freshAssets: false });
 }
 
-async function removeWithSelectedEngine(file, signal) {
-  let engine = await selectBestEngine();
+async function runEngineWithValidation(engine, file, signal) {
+  const runner = engine === "birefnet" ? runBirefNet : runModNet;
+  const blob = await runner(file, signal);
+  return validateTransparentResult(blob, engine, signal);
+}
 
-  if (engine === "birefnet") {
-    try {
-      return { blob: await runBirefNet(file, signal), engine };
-    } catch (error) {
-      if (error?.removeBgUnsupported === true) {
-        // This is not a timeout. The WebGPU runtime has positively rejected the
-        // device/provider, so the bundled continuous-alpha fallback is valid.
-        selectedEnginePromise = Promise.resolve("modnet");
-        preloadPromise = null;
-        engine = "modnet";
-        emitProgress("इस device पर compatible portrait AI use हो रहा है…", 12);
-        return { blob: await runModNet(file, signal), engine };
-      }
+async function runEngineWithRetry(engine, file, signal) {
+  try {
+    return await runEngineWithValidation(engine, file, signal);
+  } catch (error) {
+    if (error?.name === "AbortError" || signal?.aborted) throw abortError();
+    if (!isRetryableRemoveBgError(error)) {
       throw Object.assign(error, { removeBgEngine: engine });
+    }
+
+    console.warn(`[removeBg] ${engine} retry:`, error);
+    emitProgress(
+      engine === "birefnet"
+        ? "High-quality AI clean retry कर रहा है…"
+        : "Fast portrait AI clean retry कर रहा है…",
+      7,
+    );
+    await retrySameEngine(engine);
+    const retried = await runEngineWithValidation(engine, file, signal);
+    emitProgress("Clean transparent photo तैयार है", 100);
+    return retried;
+  }
+}
+
+async function removeWithSmartEngine(file, signal) {
+  const preferredEngine = await selectBestEngine();
+
+  // If the quality engine is already fully ready, use it. Otherwise do not
+  // block this action; run the fast local path immediately.
+  if (preferredEngine === "birefnet" && birefNetReady) {
+    try {
+      return {
+        blob: await runEngineWithRetry("birefnet", file, signal),
+        engine: "birefnet",
+      };
+    } catch (error) {
+      if (error?.name === "AbortError" || signal?.aborted) throw abortError();
+      console.warn("[removeBg] BiRefNet failed or looked blank; falling back to MODNet.", error);
+      emitProgress("Fast portrait AI par switch हो रहा है…", 14);
+      const fallbackBlob = await runEngineWithRetry("modnet", file, signal);
+      return { blob: fallbackBlob, engine: "modnet" };
     }
   }
 
-  try {
-    return { blob: await runModNet(file, signal), engine };
-  } catch (error) {
-    throw Object.assign(error, { removeBgEngine: engine });
+  if (preferredEngine === "birefnet" && !birefNetReady) {
+    emitProgress(
+      "Fast portrait AI तुरंत चल रहा है… High-quality model background में ready हो रहा है…",
+      10,
+    );
+    void warmBirefNetInBackground();
   }
+
+  const blob = await runEngineWithRetry("modnet", file, signal);
+  return { blob, engine: "modnet" };
 }
 
 /**
@@ -242,39 +424,30 @@ export async function removeBg(file, onProgress, signal) {
     throw new Error("Please select a valid image.");
   }
   throwIfAborted(signal);
-  onProgress?.("High-quality portrait AI तैयार हो रहा है…", 2);
+  onProgress?.("Portrait AI तैयार हो रहा है…", 2);
 
   return queueProcessing(async () => {
     throwIfAborted(signal);
     activeProgress = onProgress || null;
-    let engine = await selectBestEngine();
+    let engine = "modnet";
     try {
-      try {
-        const { blob, engine: usedEngine } = await removeWithSelectedEngine(file, signal);
-        engine = usedEngine;
-        emitProgress("Clean transparent photo तैयार है", 100);
-        return blob;
-      } catch (firstError) {
-        if (firstError?.name === "AbortError" || signal?.aborted) throw abortError();
-        engine = firstError?.removeBgEngine || engine;
-        if (!isRetryableRemoveBgError(firstError)) throw firstError;
-
-        console.warn(`[removeBg] ${engine} retry:`, firstError);
-        emitProgress("High-quality AI clean retry कर रहा है…", 7);
-        await retrySameEngine(engine);
-        const retried =
-          engine === "birefnet"
-            ? await runBirefNet(file, signal)
-            : await runModNet(file, signal);
-        emitProgress("Clean transparent photo तैयार है", 100);
-        return retried;
-      }
+      // Ensure at least the fast local engine is fully ready before we start.
+      await preloadBgModel((stage, percentage) => emitProgress(stage, percentage));
+      const { blob, engine: usedEngine } = await removeWithSmartEngine(file, signal);
+      engine = usedEngine;
+      emitProgress(
+        engine === "birefnet"
+          ? "High-quality transparent photo तैयार है"
+          : "Fast clean transparent photo तैयार है",
+        100,
+      );
+      return blob;
     } catch (error) {
       if (error?.name === "AbortError" || signal?.aborted) throw abortError();
       console.error("[removeBg] Portrait removal failed:", error);
       reportNativeFailure(error, engine);
       throw new Error(
-        "Clean background removal पूरा नहीं हुआ. Internet चालू रखकर Retry करें—background वाली photo save नहीं की गई है.",
+        "Background remove पूरा नहीं हुआ. Internet on रखकर photo दोबारा try करें — background वाली photo save नहीं की गई है.",
         { cause: error },
       );
     } finally {
@@ -287,6 +460,8 @@ export async function removeBg(file, onProgress, signal) {
 export function refreshRemoveBgKeys() {
   preloadPromise = null;
   selectedEnginePromise = null;
+  silentQualityWarmupPromise = null;
+  birefNetReady = false;
   if (birefNetPromise) {
     void birefNetPromise
       .then(({ resetBirefNetEngine }) => resetBirefNetEngine({ freshAssets: true }))
