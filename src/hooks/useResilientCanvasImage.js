@@ -110,12 +110,23 @@ export default function useResilientCanvasImage(sources, maxRetriesPerSource = 1
               try {
                 result = await loadCorsSafeRemoteImage(source, controller.signal);
               } catch (fetchError) {
-                // Some providers/browser versions can still load an anonymous
-                // image even if fetch behaves differently. Keep that as a
-                // second canvas-safe attempt before moving to the next source.
                 lastError = fetchError;
-                const image = await loadImageElement(source, { anonymous: true });
-                result = { image, objectUrl: null };
+
+                // Mobile Chrome/WebView can keep an old opaque/no-CORS cache
+                // entry even after R2/Firebase CORS is fixed. When direct CORS
+                // fetch fails, use our same-origin Vercel image proxy. The
+                // proxy is restricted to mlmprofiles assets only and returns a
+                // normal image response that is always safe for Konva/canvas.
+                try {
+                  const proxyUrl = `/api/image-proxy?url=${encodeURIComponent(source)}`;
+                  result = await loadCorsSafeRemoteImage(proxyUrl, controller.signal);
+                } catch (proxyError) {
+                  lastError = proxyError;
+                  // Final compatibility attempt for browsers where anonymous
+                  // image loading works even though fetch behaves differently.
+                  const image = await loadImageElement(source, { anonymous: true });
+                  result = { image, objectUrl: null };
+                }
               }
             } else {
               const image = await loadImageElement(source);

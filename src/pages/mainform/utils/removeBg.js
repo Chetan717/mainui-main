@@ -65,6 +65,12 @@ async function loadModNetEngine() {
 async function selectBestEngine() {
   if (!selectedEnginePromise) {
     selectedEnginePromise = (async () => {
+      // Mobile browsers are the stability-sensitive path. Loading a ~98 MB
+      // WebGPU model there causes long waits, memory pressure and provider
+      // crashes on many Android devices. Use the tuned MODNet path directly
+      // on phones/tablets; desktop can still upgrade to BiRefNet when ready.
+      if (isMobileLikeDevice()) return "modnet";
+
       try {
         const { getBirefNetCapability } = await loadBirefNetEngine();
         const capability = await getBirefNetCapability();
@@ -77,6 +83,16 @@ async function selectBestEngine() {
     })();
   }
   return selectedEnginePromise;
+}
+
+
+function isMobileLikeDevice() {
+  if (typeof navigator === "undefined") return false;
+  if (navigator.userAgentData && typeof navigator.userAgentData.mobile === "boolean") {
+    return navigator.userAgentData.mobile;
+  }
+  const ua = String(navigator.userAgent || "");
+  return /Android|iPhone|iPad|iPod|Mobile|IEMobile|Opera Mini/i.test(ua);
 }
 
 function reportNativeFailure(error, engine) {

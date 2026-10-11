@@ -51,17 +51,32 @@ function tagEngineError(error, stage, retryable = false) {
   return tagged;
 }
 
-function assetUrl(fileName) {
-  const configuredBase = String(import.meta.env.VITE_MODNET_ASSET_BASE_URL || "").trim();
-  const base = configuredBase
-    ? `${configuredBase.replace(/\/+$/, "")}/`
-    : `${import.meta.env.BASE_URL}modnet/`;
+function versionedAssetUrl(base, fileName) {
   const url = new URL(`${base}${fileName}`, window.location.href);
-  // Cache files permanently on the device while keeping future model updates
-  // safe: bump this version whenever any MODNet/ORT asset changes.
   url.searchParams.set("v", MODEL_ASSET_VERSION);
   if (assetRevision > 0) url.searchParams.set("retry", String(assetRevision));
   return url.href;
+}
+
+function localAssetUrl(fileName) {
+  const base = `${import.meta.env.BASE_URL}modnet/`;
+  return versionedAssetUrl(base, fileName);
+}
+
+function remoteModelUrl() {
+  const configuredBase = String(import.meta.env.VITE_MODNET_ASSET_BASE_URL || "").trim();
+  if (!configuredBase) return "";
+  return versionedAssetUrl(`${configuredBase.replace(/\/+$/, "")}/`, "modnet.onnx");
+}
+
+function isMobileRuntime() {
+  if (typeof navigator === "undefined") return false;
+  if (navigator.userAgentData && typeof navigator.userAgentData.mobile === "boolean") {
+    return navigator.userAgentData.mobile;
+  }
+  return /Android|iPhone|iPad|iPod|Mobile|IEMobile|Opera Mini/i.test(
+    String(navigator.userAgent || ""),
+  );
 }
 
 async function loadRuntime() {
@@ -74,9 +89,12 @@ async function loadRuntime() {
         // the blob: CSP failure that the previous engine hit.
         ort.env.wasm.numThreads = 1;
         ort.env.wasm.proxy = false;
+        // Keep ORT runtime files same-origin. Some Android Chrome/WebView
+        // versions fail when the WASM/module pair is fetched cross-origin from
+        // R2 even though the ONNX model itself can be fetched there safely.
         ort.env.wasm.wasmPaths = {
-          wasm: assetUrl("ort-wasm-simd-threaded.wasm"),
-          mjs: assetUrl("ort-wasm-simd-threaded.mjs"),
+          wasm: localAssetUrl("ort-wasm-simd-threaded.wasm"),
+          mjs: localAssetUrl("ort-wasm-simd-threaded.mjs"),
         };
         return ort;
       })
@@ -91,20 +109,32 @@ async function loadRuntime() {
 async function fetchModel(onProgress) {
   const cacheMode = forceFreshModelFetch ? "reload" : "force-cache";
   forceFreshModelFetch = false;
-  let response;
-  try {
-    response = await fetch(assetUrl("modnet.onnx"), {
-      cache: cacheMode,
-    });
-  } catch (error) {
-    throw tagEngineError(error, "model-download", true);
+
+  // Prefer the R2 model to keep normal bandwidth off Vercel, but always keep
+  // the bundled same-origin model as a zero-configuration mobile fallback.
+  const candidates = [remoteModelUrl(), localAssetUrl("modnet.onnx")].filter(Boolean);
+  let lastError = null;
+  let response = null;
+
+  for (const candidate of [...new Set(candidates)]) {
+    try {
+      const attempt = await fetch(candidate, {
+        cache: cacheMode,
+        mode: "cors",
+        credentials: "omit",
+      });
+      if (attempt.ok) {
+        response = attempt;
+        break;
+      }
+      lastError = new Error(`Portrait model download failed (${attempt.status}).`);
+    } catch (error) {
+      lastError = error;
+    }
   }
-  if (!response.ok) {
-    throw tagEngineError(
-      new Error(`Portrait model download failed (${response.status}).`),
-      "model-download",
-      response.status === 408 || response.status === 429 || response.status >= 500,
-    );
+
+  if (!response) {
+    throw tagEngineError(lastError || new Error("Portrait model download failed."), "model-download", true);
   }
 
   const expectedSize = Number(response.headers.get("content-length")) || 0;
@@ -124,7 +154,9 @@ async function fetchModel(onProgress) {
     received += value.length;
     const ratio = expectedSize > 0 ? Math.min(1, received / expectedSize) : 0;
     onProgress?.(
-      "Professional AI मॉडल पहली बार डाउनलोड हो रहा है…",
+      isMobileRuntime()
+        ? "Mobile portrait AI पहली बार तैयार हो रहा है…"
+        : "Professional AI मॉडल पहली बार डाउनलोड हो रहा है…",
       8 + ratio * 30,
     );
   }
@@ -537,7 +569,13 @@ async function runModNetInference(
     width: sourceCanvas.width,
     height: sourceCanvas.height,
   };
-  const inferenceSize = getInferenceSize(crop.width, crop.height);
+  const mobileRuntime = isMobileRuntime();
+  const inferenceSize = getInferenceSize(
+    crop.width,
+    crop.height,
+    mobileRuntime ? 512 : INFERENCE_REFERENCE_SIZE,
+    mobileRuntime ? 768 : MAX_INFERENCE_SIDE,
+  );
   const inferenceCanvas = document.createElement("canvas");
   inferenceCanvas.width = inferenceSize.width;
   inferenceCanvas.height = inferenceSize.height;
@@ -822,7 +860,13 @@ export async function removeBackgroundWithModNet(file, onProgress, signal) {
   ]);
   throwIfAborted(signal);
 
-  const safeOutput = getSafeOutputSize(decoded.width, decoded.height);
+  const mobileRuntime = isMobileRuntime();
+  const safeOutput = getSafeOutputSize(
+    decoded.width,
+    decoded.height,
+    mobileRuntime ? 1600 : MAX_OUTPUT_SIDE,
+    mobileRuntime ? 1600 * 1200 : MAX_OUTPUT_PIXELS,
+  );
   const sourceCanvas = document.createElement("canvas");
   sourceCanvas.width = safeOutput.width;
   sourceCanvas.height = safeOutput.height;
