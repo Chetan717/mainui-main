@@ -345,6 +345,7 @@ const GENERAL_SELECT_TYPES = new Set([
   // "Trending",
   "Today_Trending",
   "Festival",
+  "Navratri_Special",
   "Latest_update",
   "Product",
   "Motivational",
