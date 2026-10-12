@@ -25,6 +25,7 @@ import {
 const TYPE_GROUPS = [
   [
     "Today_Trending",
+    "Navratri_Special",
     "Latest_update",
     "Product",
     "Motivational",
