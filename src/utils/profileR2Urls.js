@@ -1,8 +1,7 @@
 const VITE_ENV = import.meta.env || {};
 
 export const R2_PROFILE_BASE_URL = String(
-  VITE_ENV.VITE_R2_PROFILE_BASE_URL ||
-    "https://pub-a9fc3713abb3442ba09ff324db4e136f.r2.dev",
+  VITE_ENV.VITE_R2_PROFILE_BASE_URL || "https://profile.mlmposter.com",
 ).replace(/\/+$/, "");
 
 const decodePath = (value) => {
