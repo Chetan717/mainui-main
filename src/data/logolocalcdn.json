@@ -644,5 +644,19 @@
          "size": "rectangle"
        }
      ]
+   },
+   {
+     "ID": "pHbSR9crbNw9tFelzKEN",
+     "name": "MLM LIVE",
+     "logos": [
+       {
+         "link": "https://firebasestorage.googleapis.com/v0/b/mlmbooster-a4887.firebasestorage.app/o/companies%2Flogos%2F1791815094226_c35ihx.webp?alt=media&token=0bdebdfa-b840-41a3-9621-71c09e5aebf2",
+         "size": "square"
+       },
+       {
+         "link": "https://firebasestorage.googleapis.com/v0/b/mlmbooster-a4887.firebasestorage.app/o/companies%2Flogos%2F1791815094226_c35ihx.webp?alt=media&token=0bdebdfa-b840-41a3-9621-71c09e5aebf2",
+         "size": "square"
+       }
+     ]
    }
 ]
