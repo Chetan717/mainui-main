@@ -630,5 +630,19 @@
          "size": "square"
        }
      ]
+   },
+   {
+     "ID": "3H9oMlcZfarMYx2JgyAq",
+     "name": "WINWEB",
+     "logos": [
+       {
+         "link": "https://firebasestorage.googleapis.com/v0/b/mlmbooster-a4887.firebasestorage.app/o/companies%2Flogos%2F1791798299082_0emr6w.webp?alt=media&token=4a57b343-c306-47ae-a7e2-4c1da6f53712",
+         "size": "rectangle"
+       },
+       {
+         "link": "https://firebasestorage.googleapis.com/v0/b/mlmbooster-a4887.firebasestorage.app/o/companies%2Flogos%2F1791798299082_0emr6w.webp?alt=media&token=4a57b343-c306-47ae-a7e2-4c1da6f53712",
+         "size": "rectangle"
+       }
+     ]
    }
 ]
